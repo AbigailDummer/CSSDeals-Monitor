@@ -48,12 +48,12 @@ def save_state(state_path: Path, state: dict) -> None:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def fetch_products(config: dict) -> list:
+def fetch_page(config: dict, page: int) -> list:
     url = f"{config['api_base']}/api/product"
     params = {
         "fields": 1,
         "categoryId": config.get("category_id", ""),
-        "page": 1,
+        "page": page,
         "pageSize": config.get("page_size", 50),
         "priceMin": config.get("price_min", "0.00"),
         "priceMax": config.get("price_max", "99999.00"),
@@ -92,13 +92,52 @@ def fetch_products(config: dict) -> list:
     return products
 
 
+def fetch_new_products(config: dict, seen_ids: set) -> list:
+    """Percorre as páginas (da mais nova para a mais antiga) até encontrar um
+    produto já visto, garantindo que nenhum produto novo seja perdido mesmo
+    que muitos tenham sido adicionados desde a última checagem."""
+    max_pages = config.get("max_pages_per_check", 20)
+    new_products = []
+    page = 1
+    while page <= max_pages:
+        products = fetch_page(config, page)
+        if not products:
+            break
+
+        reached_known = False
+        for p in products:
+            if p["id"] in seen_ids:
+                reached_known = True
+                break
+            new_products.append(p)
+
+        if reached_known:
+            break
+        page += 1
+    else:
+        log.warning(
+            "Atingiu o limite de %d página(s) sem encontrar um produto já visto — "
+            "pode haver produtos novos além do que foi verificado nesta execução.",
+            max_pages,
+        )
+
+    return new_products
+
+
 def send_discord_message(webhook_url: str, content: str = None, embeds: list = None) -> None:
     payload = {}
     if content:
         payload["content"] = content
     if embeds:
         payload["embeds"] = embeds
+
     resp = requests.post(webhook_url, json=payload, timeout=15)
+    if resp.status_code == 429:
+        retry_after = resp.json().get("retry_after", 1)
+        log.warning("Rate limit do Discord atingido, aguardando %.1fs.", retry_after)
+        time.sleep(retry_after)
+        resp = requests.post(webhook_url, json=payload, timeout=15)
+
     if resp.status_code >= 300:
         log.error("Falha ao enviar mensagem para o Discord (%s): %s", resp.status_code, resp.text)
 
@@ -127,14 +166,16 @@ def notify_new_products(webhook_url: str, new_products: list) -> None:
         chunk = embeds[i : i + 10]
         content = "🆕 Novo(s) produto(s) detectado(s) no CSSDeals!" if i == 0 else None
         send_discord_message(webhook_url, content=content, embeds=chunk)
+        if i + 10 < len(embeds):
+            time.sleep(1)  # evita rate limit do Discord em rajadas grandes
 
 
 def run_check(config: dict, state_path: Path, webhook_url: str) -> None:
-    products = fetch_products(config)
     state = load_state(state_path)
     seen_ids = set(state.get("seen_ids", []))
 
     if not seen_ids:
+        products = fetch_page(config, 1)
         log.info("Primeira execução: salvando %d produto(s) como estado inicial (sem notificar).", len(products))
         state["seen_ids"] = [p["id"] for p in products]
         save_state(state_path, state)
@@ -144,7 +185,7 @@ def run_check(config: dict, state_path: Path, webhook_url: str) -> None:
         )
         return
 
-    new_products = [p for p in products if p["id"] not in seen_ids]
+    new_products = fetch_new_products(config, seen_ids)
     if new_products:
         new_products.reverse()  # notifica do mais antigo para o mais novo
         log.info("Detectado(s) %d produto(s) novo(s).", len(new_products))
@@ -158,7 +199,7 @@ def run_check(config: dict, state_path: Path, webhook_url: str) -> None:
         state["seen_ids"] = order
         save_state(state_path, state)
     else:
-        log.info("Nenhum produto novo. Última verificação: %d produto(s) na primeira página.", len(products))
+        log.info("Nenhum produto novo.")
 
 
 def main() -> None:

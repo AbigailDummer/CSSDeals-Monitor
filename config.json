@@ -4,6 +4,7 @@
   "price_min": "0.00",
   "price_max": "99999.00",
   "page_size": 50,
+  "max_pages_per_check": 20,
   "check_interval_seconds": 60,
   "state_file": "seen_products.json",
   "max_seen_ids": 3000,
