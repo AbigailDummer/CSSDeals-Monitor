@@ -93,26 +93,34 @@ def fetch_page(config: dict, page: int) -> list:
 
 
 def fetch_new_products(config: dict, seen_ids: set) -> list:
-    """Percorre as páginas (da mais nova para a mais antiga) até encontrar um
-    produto já visto, garantindo que nenhum produto novo seja perdido mesmo
-    que muitos tenham sido adicionados desde a última checagem."""
+    """Percorre as páginas (da mais nova para a mais antiga) até encontrar uma
+    página com produtos já vistos, garantindo que nenhum produto novo seja
+    perdido mesmo que muitos tenham sido adicionados desde a última checagem.
+
+    Cada página é lida até o fim (não para no meio ao achar o primeiro
+    conhecido), e depois da primeira página com algum produto conhecido ainda
+    é buscada mais uma página extra de margem — assim, mesmo que um produto
+    novo não apareça estritamente no topo da lista, ele ainda é capturado."""
     max_pages = config.get("max_pages_per_check", 20)
     new_products = []
     page = 1
+    safety_margin_left = 1
     while page <= max_pages:
         products = fetch_page(config, page)
         if not products:
             break
 
-        reached_known = False
+        page_had_known = False
         for p in products:
             if p["id"] in seen_ids:
-                reached_known = True
-                break
-            new_products.append(p)
+                page_had_known = True
+            else:
+                new_products.append(p)
 
-        if reached_known:
-            break
+        if page_had_known:
+            if safety_margin_left <= 0:
+                break
+            safety_margin_left -= 1
         page += 1
     else:
         log.warning(
