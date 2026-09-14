@@ -40,7 +40,7 @@ def load_state(state_path: Path) -> dict:
     if state_path.exists():
         with open(state_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {"seen_ids": []}
+    return {"max_seen_id": None}
 
 
 def save_state(state_path: Path, state: dict) -> None:
@@ -92,39 +92,36 @@ def fetch_page(config: dict, page: int) -> list:
     return products
 
 
-def fetch_new_products(config: dict, seen_ids: set) -> list:
-    """Percorre as páginas (da mais nova para a mais antiga) até encontrar uma
-    página com produtos já vistos, garantindo que nenhum produto novo seja
-    perdido mesmo que muitos tenham sido adicionados desde a última checagem.
-
-    Cada página é lida até o fim (não para no meio ao achar o primeiro
-    conhecido), e depois da primeira página com algum produto conhecido ainda
-    é buscada mais uma página extra de margem — assim, mesmo que um produto
-    novo não apareça estritamente no topo da lista, ele ainda é capturado."""
+def fetch_new_products(config: dict, max_seen_id: int) -> list:
+    """Percorre as páginas (da mais nova para a mais antiga) coletando todo
+    produto cujo id seja maior que `max_seen_id`. Os ids desse site são
+    sequenciais por data de criação (tipo snowflake) e a listagem vem sempre
+    ordenada do mais novo para o mais antigo — então basta comparar o id com
+    a marca d'água mais alta já vista: não importa a posição do produto na
+    lista, se o id é maior, é novo. Assim que aparece um id menor ou igual,
+    sabemos (pela ordenação) que tudo dali em diante já é conhecido."""
     max_pages = config.get("max_pages_per_check", 20)
     new_products = []
     page = 1
-    safety_margin_left = 1
     while page <= max_pages:
         products = fetch_page(config, page)
         if not products:
             break
 
-        page_had_known = False
+        reached_known = False
         for p in products:
-            if p["id"] in seen_ids:
-                page_had_known = True
-            else:
+            if int(p["id"]) > max_seen_id:
                 new_products.append(p)
+            else:
+                reached_known = True
+                break  # ordenação decrescente: o resto da página já é conhecido
 
-        if page_had_known:
-            if safety_margin_left <= 0:
-                break
-            safety_margin_left -= 1
+        if reached_known:
+            break
         page += 1
     else:
         log.warning(
-            "Atingiu o limite de %d página(s) sem encontrar um produto já visto — "
+            "Atingiu o limite de %d página(s) sem alcançar um produto já visto — "
             "pode haver produtos novos além do que foi verificado nesta execução.",
             max_pages,
         )
@@ -180,31 +177,28 @@ def notify_new_products(webhook_url: str, new_products: list) -> None:
 
 def run_check(config: dict, state_path: Path, webhook_url: str) -> None:
     state = load_state(state_path)
-    seen_ids = set(state.get("seen_ids", []))
+    max_seen_id_raw = state.get("max_seen_id")
 
-    if not seen_ids:
+    if max_seen_id_raw is None:
         products = fetch_page(config, 1)
-        log.info("Primeira execução: salvando %d produto(s) como estado inicial (sem notificar).", len(products))
-        state["seen_ids"] = [p["id"] for p in products]
+        newest_id = max((int(p["id"]) for p in products), default=0)
+        log.info("Primeira execução: marcando id %d como ponto de partida (sem notificar).", newest_id)
+        state["max_seen_id"] = newest_id
         save_state(state_path, state)
         send_discord_message(
             webhook_url,
-            content=f"✅ Monitor iniciado para {config['api_base']} — {len(products)} produto(s) na base inicial.",
+            content=f"✅ Monitor iniciado para {config['api_base']} — a partir de agora, produtos novos serão notificados aqui.",
         )
         return
 
-    new_products = fetch_new_products(config, seen_ids)
+    max_seen_id = int(max_seen_id_raw)
+    new_products = fetch_new_products(config, max_seen_id)
     if new_products:
         new_products.reverse()  # notifica do mais antigo para o mais novo
         log.info("Detectado(s) %d produto(s) novo(s).", len(new_products))
         notify_new_products(webhook_url, new_products)
 
-        order = state.get("seen_ids", [])
-        order.extend(p["id"] for p in new_products)
-        max_seen = config.get("max_seen_ids", 3000)
-        if len(order) > max_seen:
-            order = order[-max_seen:]
-        state["seen_ids"] = order
+        state["max_seen_id"] = max(int(p["id"]) for p in new_products)
         save_state(state_path, state)
     else:
         log.info("Nenhum produto novo.")
