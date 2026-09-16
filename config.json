@@ -5,6 +5,7 @@
   "price_max": "99999.00",
   "page_size": 50,
   "max_pages_per_check": 20,
+  "max_seen_ids": 5000,
   "check_interval_seconds": 60,
   "state_file": "seen_products.json",
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
