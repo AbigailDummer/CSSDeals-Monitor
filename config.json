@@ -8,5 +8,8 @@
   "max_seen_ids": 5000,
   "check_interval_seconds": 60,
   "state_file": "seen_products.json",
+  "archive_dir": "arquivo",
+  "max_details_per_check": 200,
+  "detail_delay_seconds": 0.3,
   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 }

@@ -92,6 +92,66 @@ def fetch_page(config: dict, page: int) -> list:
     return products
 
 
+def fetch_detail(config: dict, pid: str) -> dict | None:
+    """Busca o detalhe do produto (todas as fotos, tamanho, etc.). O anúncio
+    some da API quando é vendido, então isso só funciona enquanto ele está
+    ativo — por isso é chamado logo que o produto é detectado. Falha aqui não
+    impede a notificação nem a atualização do estado."""
+    try:
+        response = requests.get(
+            f"{config['api_base']}/api/product/{pid}",
+            headers={"User-Agent": config["user_agent"]},
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("Não foi possível buscar o detalhe do produto %s: %s", pid, exc)
+        return None
+    if payload.get("code") != 0 or not payload.get("data"):
+        log.warning("Detalhe do produto %s indisponível: %s", pid, payload.get("msg"))
+        return None
+    return payload["data"]
+
+
+def enrich_with_details(config: dict, products: list) -> None:
+    """Completa cada produto com a lista de fotos e dados extras do detalhe."""
+    limit = config.get("max_details_per_check", 200)
+    delay = config.get("detail_delay_seconds", 0.3)
+    for i, p in enumerate(products):
+        p["images"] = [p["image"]] if p["image"] else []
+        if i >= limit:
+            continue
+        detail = fetch_detail(config, p["id"])
+        if detail:
+            urls = [img.get("url") for img in (detail.get("images") or []) if img.get("url")]
+            if urls:
+                p["images"] = urls
+            sku = (detail.get("skus") or [{}])[0]
+            p["size"] = sku.get("size") or None
+            p["sku_names"] = (sku.get("skuNames") or "").strip("; ") or None
+            p["shelf_num"] = detail.get("shelfNum")
+            p["cssbuy_order_no"] = detail.get("cssbuyOrderNo")
+        time.sleep(delay)
+
+
+def archive_products(config: dict, products: list) -> None:
+    """Acrescenta os produtos ao arquivo do dia (JSON Lines, um produto por
+    linha), pra consultar fotos e links depois que o anúncio for vendido."""
+    archive_dir = BASE_DIR / config.get("archive_dir", "arquivo")
+    archive_dir.mkdir(exist_ok=True)
+    now = datetime.now(timezone.utc)
+    path = archive_dir / f"{now:%Y-%m-%d}.jsonl"
+    fields = ("id", "title", "price", "size", "sku_names", "images", "source_link",
+              "detail_link", "shelf_num", "cssbuy_order_no")
+    with open(path, "a", encoding="utf-8") as f:
+        for p in products:
+            record = {k: p.get(k) for k in fields}
+            record["detected_at"] = now.isoformat(timespec="seconds")
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    log.info("Arquivados %d produto(s) em %s.", len(products), path.relative_to(BASE_DIR))
+
+
 def fetch_new_products(config: dict, seen_ids: set) -> list:
     """Percorre as páginas (da mais nova para a mais antiga) coletando todo
     produto cujo id não esteja em `seen_ids`. Não confia na posição do
@@ -150,6 +210,10 @@ def notify_new_products(webhook_url: str, new_products: list) -> None:
         description_lines = []
         if p["price"] is not None:
             description_lines.append(f"Preço: ¥{p['price']}")
+        if p.get("size"):
+            description_lines.append(f"Tamanho: {p['size']}")
+        if len(p.get("images") or []) > 1:
+            description_lines.append(f"{len(p['images'])} fotos (salvas no arquivo do GitHub)")
         if p["source_link"]:
             description_lines.append(f"[Link original]({p['source_link']})")
 
@@ -198,6 +262,11 @@ def run_check(config: dict, state_path: Path, webhook_url: str) -> None:
     if new_products:
         new_products.reverse()  # notifica do mais antigo para o mais novo
         log.info("Detectado(s) %d produto(s) novo(s).", len(new_products))
+        try:
+            enrich_with_details(config, new_products)
+            archive_products(config, new_products)
+        except Exception:
+            log.exception("Erro ao arquivar produtos (a notificação segue normalmente).")
         notify_new_products(webhook_url, new_products)
 
         order = state.get("seen_ids", [])
