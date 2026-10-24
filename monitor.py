@@ -5,13 +5,16 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
+# Horário de Brasília (UTC−3, sem horário de verão desde 2019). Fuso fixo pra
+# não depender do pacote tzdata, que não vem no Python do Windows.
+BRT = timezone(timedelta(hours=-3), "BRT")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -140,14 +143,14 @@ def archive_products(config: dict, products: list) -> None:
     linha), pra consultar fotos e links depois que o anúncio for vendido."""
     archive_dir = BASE_DIR / config.get("archive_dir", "arquivo")
     archive_dir.mkdir(exist_ok=True)
-    now = datetime.now(timezone.utc)
-    path = archive_dir / f"{now:%Y-%m-%d}.jsonl"
+    now = datetime.now(BRT)
+    path = archive_dir / f"{now:%Y-%m-%d}.jsonl"  # arquivo do dia no horário de Brasília
     fields = ("id", "title", "price", "size", "sku_names", "images", "source_link",
               "detail_link", "shelf_num", "cssbuy_order_no")
     with open(path, "a", encoding="utf-8") as f:
         for p in products:
-            record = {k: p.get(k) for k in fields}
-            record["detected_at"] = now.isoformat(timespec="seconds")
+            record = {"detected_at": now.isoformat(timespec="seconds")}
+            record.update({k: p.get(k) for k in fields})
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     log.info("Arquivados %d produto(s) em %s.", len(products), path.relative_to(BASE_DIR))
 
