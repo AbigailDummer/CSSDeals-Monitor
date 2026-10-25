@@ -3,9 +3,10 @@ import html
 import json
 import logging
 import os
+import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -142,6 +143,18 @@ def enrich_with_details(config: dict, products: list) -> None:
         time.sleep(delay)
 
 
+def order_date(order_no: str | None) -> str | None:
+    """Data do pedido CSSBuy original, codificada no número: O + AAMMDD + sequência
+    (ex.: O250528727522 → 2025-05-28). Devolve None se o número não seguir o padrão."""
+    m = re.match(r"O(\d{2})(\d{2})(\d{2})\d+$", order_no or "")
+    if not m:
+        return None
+    try:
+        return date(2000 + int(m[1]), int(m[2]), int(m[3])).isoformat()
+    except ValueError:
+        return None
+
+
 def archive_products(config: dict, products: list) -> None:
     """Acrescenta os produtos ao arquivo do dia (JSON Lines, um produto por
     linha), pra consultar fotos e links depois que o anúncio for vendido."""
@@ -153,7 +166,8 @@ def archive_products(config: dict, products: list) -> None:
               "detail_link", "shelf_num", "cssbuy_order_no")
     with open(path, "a", encoding="utf-8") as f:
         for p in products:
-            record = {"detected_at": now.isoformat(timespec="seconds")}
+            record = {"detected_at": now.isoformat(timespec="seconds"),
+                      "order_date": order_date(p.get("cssbuy_order_no"))}
             record.update({k: p.get(k) for k in fields})
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     log.info("Arquivados %d produto(s) em %s.", len(products), path.relative_to(BASE_DIR))
