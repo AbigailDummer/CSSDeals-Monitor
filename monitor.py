@@ -132,6 +132,10 @@ def enrich_with_details(config: dict, products: list) -> None:
                 p["images"] = urls
             sku = (detail.get("skus") or [{}])[0]
             p["size"] = sku.get("size") or None
+            try:
+                p["quantity"] = int(sku.get("quantity"))
+            except (TypeError, ValueError):
+                p["quantity"] = None
             p["sku_names"] = (sku.get("skuNames") or "").strip("; ") or None
             p["shelf_num"] = detail.get("shelfNum")
             p["cssbuy_order_no"] = detail.get("cssbuyOrderNo")
@@ -145,7 +149,7 @@ def archive_products(config: dict, products: list) -> None:
     archive_dir.mkdir(exist_ok=True)
     now = datetime.now(BRT)
     path = archive_dir / f"{now:%Y-%m-%d}.jsonl"  # arquivo do dia no horário de Brasília
-    fields = ("id", "title", "price", "size", "sku_names", "images", "source_link",
+    fields = ("id", "title", "price", "quantity", "size", "sku_names", "images", "source_link",
               "detail_link", "shelf_num", "cssbuy_order_no")
     with open(path, "a", encoding="utf-8") as f:
         for p in products:
